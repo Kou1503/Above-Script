@@ -89,8 +89,17 @@ return function(State)
         Tooltip = setcap and "Applied through setfpscap." or "This executor has no setfpscap, so the cap does nothing." })
     gFps:AddToggle("LiteGfx", { Text = "Disable Shadows & Terrain Decoration", Default = false, Callback = setLite })
 
+    -- Performance: the telemetry text is display-only, so the ~25 ms flower scan runs only while the
+    -- menu is open on the Pollinator tab (it refreshes within a second of opening it).
+    local Library = State.UI.Library
+    local function telemetryVisible()
+        return Library.Toggled ~= false and (Library.ActiveTab == nil or Library.ActiveTab == Tabs.Pollen)
+    end
+
     task.spawn(function()
         while not S.unloaded do
+            while not S.unloaded and not telemetryVisible() do task.wait(0.5) end
+            if S.unloaded then break end
             local active = 0
             if os.clock() - (PL.stripCacheAt or -999) > 10 then                 -- strip layout, refreshed every 10 s
                 PL.stripCache, PL.stripCacheAt = STRIP.current(), os.clock()

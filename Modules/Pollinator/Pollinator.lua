@@ -38,13 +38,21 @@ return function(State)
     local BreedCfg = Config.Flower.Breeding
     local POLL_REACH = 16
     local HARVEST_REACH = 16
-    local CLICK_GAP = 0.35
+    -- Live-tested (ABOVE v145): the server answers each pollinate click in ~50 ms and accepts clicks back to
+    -- back, so the old 0.35 s gap only cost time (every click still waits for its PollenSource reply).
+    -- What actually drops clicks is clicking right after a glide/teleport: the server still sees the old
+    -- position.  No pause after moving lost 3 of 6 moved pairs; 0.10-0.15 s lost 0-1 in 20; 0.2 s keeps margin.
+    local CLICK_GAP = 0.05
+    local MOVE_SETTLE = 0.2
+    local PICK_TIMEOUT = 0.5                      -- 10x the normal reply time; one retry follows a miss
     local HARVEST_GAP = math.max((Config.Build.Pickup and Config.Build.Pickup.RepeatSeconds or 0.1667) + 0.04, 0.2)
 
     local PL = State.Pollinator
     PL.autoRun, PL.sweeping, PL.cancel = false, false, false
     PL.pollen = nil                       -- cell key of the flower we currently carry pollen from (PollenSource)
     PL.busyUntil = {}                     -- key -> clock; fallback in case the Breeding attribute lags
+    PL.rejectedUntil = {}                 -- "a|b" -> clock; a pair the server refused is skipped for REJECT_SKIP s
+    local REJECT_SKIP = 120
     PL.stats = { glow = 0, normal = 0, pairs = 0, rollbacks = 0, sweeps = 0, started = nil }
     PL.hidden = {}                        -- instance -> {property, original}
     PL.heldAt, PL.lastPlan, PL.parentP = 0, "no sweep yet", 0
@@ -109,7 +117,11 @@ return function(State)
             r.AssemblyLinearVelocity = Vector3.zero
             r.CFrame = CFrame.new(target) * (r.CFrame - r.CFrame.Position)
             m.ap.Position = target
+            -- The settle clock starts at the hop itself, so the pollinate pause overlaps this wait instead of
+            -- adding another 0.2 s after it (harvest still gets the original 0.2 s wait).
+            PL.lastMoveAt = os.clock()
             task.wait(0.2)
+            return
         else
             m.ap.MaxVelocity = Options.PollSpeed.Value
             m.ap.Position = target
@@ -121,6 +133,13 @@ return function(State)
             end
             task.wait(0.05)
         end
+        PL.lastMoveAt = os.clock()
+    end
+
+    -- wait until the server has had MOVE_SETTLE seconds to see where we stopped
+    local function settleAfterMove()
+        local w = (PL.lastMoveAt or 0) + MOVE_SETTLE - os.clock()
+        if w > 0 then task.wait(w) end
     end
 
     local function plPace(interval)
@@ -306,6 +325,18 @@ return function(State)
         local radius = BreedCfg.PartnerRadiusCells or 2
         local merge = Toggles.PollMergeVariants.Value                      -- ignore Plain / Striped / Dotted differences
         local visited, pairsOut = {}, {}                                   -- VisitedThisSweep
+        -- Performance: hasFreeTile(e) only depends on S.occ / allCells / PL.strip, none of which change
+        -- while this loop runs (it never yields), so each flower's answer is computed once per plan.
+        local freeCache = {}
+        local function freeTile(e)
+            local v = freeCache[e]
+            if v == nil then v = hasFreeTile(e, allCells) freeCache[e] = v end
+            return v
+        end
+        local now = os.clock()
+        local function recentlyRejected(x, y)
+            return (PL.rejectedUntil[x.key .. "|" .. y.key] or 0) > now or (PL.rejectedUntil[y.key .. "|" .. x.key] or 0) > now
+        end
         for _, a in ipairs(parents) do
             if not visited[a.key] then
                 local best, bestD
@@ -318,7 +349,10 @@ return function(State)
                                 and (merge or b.pattern == a.pattern)
                                 and b.strip == a.strip and STRIP.enabled(b)          -- never across a divider
                                 and not STRIP.blockedBetween(a.cell, b.cell)         -- nor through any placed block
-                                and (hasFreeTile(a, allCells) or hasFreeTile(b, allCells)) then
+                                -- Live-tested: the server rejected every pair where only ONE parent had a free
+                                -- neighbour tile (5/5, ~1 s lost per sweep each), so both parents need one.
+                                and not recentlyRejected(a, b)
+                                and freeTile(a) and freeTile(b) then
                                 local d = dx * dx + dz * dz
                                 if not bestD or d < bestD then best, bestD = b, d end
                             end
@@ -387,8 +421,9 @@ return function(State)
         end
         if part and part.Parent then
             ensureReach(part.Position, POLL_REACH)
+            settleAfterMove()
             PollinateRemote:FireServer(part)
-            if waitPollen(nil, 1.0) then return true end
+            if waitPollen(nil, PICK_TIMEOUT) then return true end
         end
         return waitPollen(nil, 0.2)
     end
@@ -401,15 +436,21 @@ return function(State)
         if not ensureReach(mid, POLL_REACH - 2) then return false, "unreachable" end
         if not holdPollinator() then return false, "no pollinator" end
         if PL.pollen then returnPollen(byKey) end                          -- never start with stale pollen
+        settleAfterMove()
         plPace(CLICK_GAP)
         PollinateRemote:FireServer(a.part)                                  -- click 1: pick pollen from parent A
-        if not waitPollen(a.key, 1.0) then
-            task.wait(0.4)
-            if PL.pollen ~= a.key then return false, "A did not take pollen" end
+        if not waitPollen(a.key, PICK_TIMEOUT) then
+            -- No reply: the click was dropped (usually a lag spike).  Retry once, but only while we are sure
+            -- we carry nothing - clicking A again while holding its pollen would hand it back.
+            if PL.pollen ~= nil then return false, "A did not take pollen" end
+            task.wait(MOVE_SETTLE)
+            plPace(CLICK_GAP)
+            PollinateRemote:FireServer(a.part)
+            if not waitPollen(a.key, PICK_TIMEOUT) then return false, "A did not take pollen" end
         end
         plPace(CLICK_GAP)
         PollinateRemote:FireServer(b.part)                                  -- click 2: deliver to parent B
-        if waitPollen(nil, 1.0) then
+        if waitPollen(nil, PICK_TIMEOUT) then
             PL.busyUntil[a.key] = os.clock() + (BreedCfg.SecondsMin or 720)
             PL.busyUntil[b.key] = PL.busyUntil[a.key]
             PL.stats.pairs += 1
@@ -417,6 +458,7 @@ return function(State)
         end
         -- Pollen Rollback Guard: B did not accept, so click the source again and take the pollen back
         PL.stats.rollbacks += 1
+        PL.rejectedUntil[a.key .. "|" .. b.key] = os.clock() + REJECT_SKIP     -- try other partners first next sweep
         returnPollen(byKey)
         return false, "B rejected pollen (rolled back)"
     end

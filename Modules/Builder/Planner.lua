@@ -12,6 +12,14 @@ return function(State)
     local layerUnderPlayer, capacityInfo, inventory, niceName, hrp = B.layerUnderPlayer, B.capacityInfo, B.inventory, B.niceName, B.hrp
     local boxOf = B.boxOf
 
+    -- Build and Planter are separate tabs with their own Start button. B.context says which one is
+    -- planning ("build" uses the Build tab's Mode dropdown, "plant" is always the Checkerboard Planter).
+    B.context = "build"
+    function B.currentMode()
+        if B.context == "plant" then return "Checkerboard Planter" end
+        return Options.Mode.Value
+    end
+
     ------------------------------------------------------------------------------------------
     -- Line ordering: work one full line at a time (X, Z or vertical Y), step to the next line, optionally
     -- zigzagging. Direction follows Pos 1 -> Pos 2. With `sim` (placing) a cell is only emitted once it has an
@@ -27,7 +35,7 @@ return function(State)
     local function lineOrder(entries, sim, opt)
         -- direction of travel follows Pos 1 -> Pos 2 (ascending when there is no explicit region)
         local sign = { x = 1, y = 1, z = 1 }
-        if Options.Mode.Value ~= "Schematic Paste" and not Toggles.AutoLayer.Value and S.pos1 and S.pos2 then
+        if B.currentMode() ~= "Schematic Paste" and not Toggles.AutoLayer.Value and S.pos1 and S.pos2 then
             sign.x = S.pos2.x >= S.pos1.x and 1 or -1
             sign.y = S.pos2.y >= S.pos1.y and 1 or -1
             sign.z = S.pos2.z >= S.pos1.z and 1 or -1
@@ -305,9 +313,9 @@ return function(State)
 
     local function updateGuides()
         clearGuides()
-        local mode = Options.Mode.Value
-        local active = mode == "4-Strip Farm Base"
-            or (mode == "Checkerboard Planter" and Options.PlantLayout.Value == "4-Strip Mode (1-Block Dividers)")
+        -- Guides show when either tab uses the 4-strip layout (both tabs are visible as separate tabs now).
+        local active = Options.Mode.Value == "4-Strip Farm Base"
+            or Options.PlantLayout.Value == "4-Strip Mode (1-Block Dividers)"
         if not active then return end
         local g = stripGeometry()
         if not g then return end
@@ -559,9 +567,11 @@ return function(State)
     end
 
     local function buildPlan()
-        local mode = Options.Mode.Value
-        if mode == "Fill Island Layer" then return planFill()
-        elseif mode == "Checkerboard Planter" then return planPlant()
+        local mode = B.currentMode()
+        if mode == "Checkerboard Planter" then
+            if B.context ~= "plant" then return nil, "Pick a build mode (the planter has its own tab now)." end
+            return planPlant()
+        elseif mode == "Fill Island Layer" then return planFill()
         elseif mode == "Break Region" then return planBreak()
         elseif mode == "4-Strip Farm Base" then return planStripBase()
         else return planPaste() end

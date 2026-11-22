@@ -31,7 +31,6 @@ return function(State)
         Build = UI.Tabs.Build,
         Plant = UI.Tabs.Plant,
         Schem = UI.Tabs.Schem,
-        Run = UI.Tabs.Run,
     }
 
     local blockIds, flowerIds = {}, {}
@@ -45,7 +44,7 @@ return function(State)
     -- Build tab ------------------------------------------------------------------------------
     local gMode = Tabs.Build:AddLeftGroupbox("Mode & Region", "map")
     gMode:AddDropdown("Mode", {
-        Text = "Mode", Values = { "Fill Island Layer", "Checkerboard Planter", "Schematic Paste", "Break Region", "4-Strip Farm Base" },
+        Text = "Mode", Values = { "Fill Island Layer", "Schematic Paste", "Break Region", "4-Strip Farm Base" },
         Default = 1, Callback = refreshSoon,
     })
     gMode:AddToggle("AutoLayer", {
@@ -131,7 +130,7 @@ return function(State)
         gStrips:AddDropdown("Strip" .. i, { Text = "Strip " .. i .. " Flower", Values = stripFlowerValues, Default = 1,
             Searchable = true, Callback = refreshSoon })
     end
-    gStrips:AddButton({ Text = "Use 4-Strip Mode", Func = function() Options.PlantLayout:SetValue(STRIP_MODE) Options.Mode:SetValue("Checkerboard Planter") end })
+    gStrips:AddButton({ Text = "Use 4-Strip Mode", Func = function() Options.PlantLayout:SetValue(STRIP_MODE) end })
 
     local gSplit = Tabs.Plant:AddRightGroupbox("Two-Sided Layout", "split")
     gSplit:AddDropdown("SplitAxis", { Text = "Run along", Values = { "A only", "Row (Z)", "Column (X)" }, Default = 2, Callback = refreshSoon,
@@ -149,12 +148,22 @@ return function(State)
     gSch:AddToggle("SnapPasteY", { Text = "Snap paste Y to layer under me (+1)", Default = true, Callback = refreshSoon })
     gSch:AddLabel("Pastes with its min corner at your grid-snapped X/Z. Plain blocks only.", true)
 
-    -- Run tab --------------------------------------------------------------------------------
-    local gCheck = Tabs.Run:AddLeftGroupbox("Material Checklist", "list-checks")
+    -- Planter run (on the Planter tab) ---------------------------------------------------------
+    local gPlantRun = Tabs.Plant:AddRightGroupbox("Planter Run", "play")
+    B.plantChecklistLabel = gPlantRun:AddLabel("…", true)
+    gPlantRun:AddButton({ Text = "Recalculate", Func = refreshChecklist })
+    gPlantRun:AddDivider()
+    gPlantRun:AddButton({ Text = "Start planting", Func = function() startBuild("plant") end })
+    gPlantRun:AddButton({ Text = "Stop", Func = function() S.cancel = true end })
+    B.plantProgressLabel = gPlantRun:AddLabel("Done 0 / 0   (rejected 0, stops 0)", true)
+    gPlantRun:AddLabel("Uses the region, movement and timing settings on the Build tab.", true)
+
+    -- Build run (on the Build tab) -------------------------------------------------------------
+    local gCheck = Tabs.Build:AddLeftGroupbox("Material Checklist", "list-checks")
     B.checklistLabel = gCheck:AddLabel("…", true)
     gCheck:AddButton({ Text = "Recalculate", Func = refreshChecklist })
 
-    local gExec = Tabs.Run:AddRightGroupbox("Execution", "play")
+    local gExec = Tabs.Build:AddRightGroupbox("Execution", "play")
     gExec:AddToggle("Partial", { Text = "Build With Available Stock", Default = false })
     gExec:AddDropdown("MoveMode", { Text = "Movement between chunks", Values = { "Glide", "Teleport" }, Default = 1,
         Tooltip = "Glide = speed-capped slide. Teleport = instant hop (fewer seconds lost, unproven against anti-cheat)." })
@@ -169,7 +178,7 @@ return function(State)
     gExec:AddSlider("Hover", { Text = "Hover height over target (studs)", Default = 6, Min = 3, Max = 12, Rounding = 0 })
     gExec:AddToggle("ReturnHome", { Text = "Return to start position when done", Default = true })
     gExec:AddDivider()
-    gExec:AddButton({ Text = "Start", Func = startBuild })
+    gExec:AddButton({ Text = "Start building", Func = function() startBuild("build") end })
     gExec:AddButton({ Text = "Stop", Func = function() S.cancel = true end })
     B.progressLabel = gExec:AddLabel("Done 0 / 0   (rejected 0, stops 0)", true)
     gExec:AddDivider()
@@ -199,7 +208,7 @@ return function(State)
         __unified = true,
         Unload = function() State.Unload() end,
         -- headless hooks (tests / other scripts)
-        SetRegion = setRegion, Start = function() startBuild() end, Stop = function() S.cancel = true end,
+        SetRegion = setRegion, Start = function(context) startBuild(context or "build") end, Stop = function() S.cancel = true end,
         Plan = function() return buildPlan() end, State = S, Lib = Library, PL = State.Pollinator,
     }
 
@@ -209,6 +218,6 @@ return function(State)
 
     updateRegionLabel()
     refreshSoon()
-    notify("Loaded. Pick a mode, set a region, check the Run tab, then Start.", 5)
+    notify("Loaded. Build tab: pick a mode, set a region, Start building. Planter tab: Start planting.", 5)
     return true
 end

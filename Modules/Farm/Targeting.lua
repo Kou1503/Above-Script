@@ -117,8 +117,10 @@ return function(State)
                 local alive = (type(health) ~= "number" or health > 0)
                     and (not humanoid or humanoid.Health > 0)
                 local isSlime = string.find(enemyId, "Slime", 1, true) ~= nil
-                local reachable = not isSlime or (hit and hasReachableSlimeGround(enemy, hit))
-                if alive and reachable and hit and hit:IsDescendantOf(workspace) and withinMaxDistance(hit, root) then
+                -- Performance: the slime ground raycast now runs last, only for slimes that already passed
+                -- the cheap alive / in-workspace / distance checks (same result, far fewer raycasts).
+                if alive and hit and hit:IsDescendantOf(workspace) and withinMaxDistance(hit, root)
+                    and (not isSlime or hasReachableSlimeGround(enemy, hit)) then
                     local distance = (hit.Position - root.Position).Magnitude
                     if rank < bestRank or distance < bestDistance then
                         best = { mode = "kill", model = enemy, hit = hit, id = enemyId }

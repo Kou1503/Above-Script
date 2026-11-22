@@ -20,12 +20,12 @@ return function(State)
     ------------------------------------------------------------------------------------------
     -- Live material checklist
     ------------------------------------------------------------------------------------------
+    -- One checklist + progress label per tab: B.checklistLabel / B.progressLabel (Build tab) and
+    -- B.plantChecklistLabel / B.plantProgressLabel (Planter tab).
     B.checklistLabel, B.progressLabel = nil, nil
+    B.plantChecklistLabel, B.plantProgressLabel = nil, nil
 
-    local function refreshChecklist()
-        local checklistLabel = B.checklistLabel
-        if S.unloaded or S.running or not checklistLabel then return end
-        pcall(updateGuides)
+    local function refreshChecklistFor(checklistLabel)
         local ok, plan, note = pcall(buildPlan)
         if not ok then checklistLabel:SetText("Plan error: " .. tostring(plan)) return end
         if not plan then checklistLabel:SetText(tostring(note)) return end
@@ -35,7 +35,7 @@ return function(State)
             need[e.id] += 1
         end
         local lines = {}
-        if Options.Mode.Value == "Break Region" then
+        if B.currentMode() == "Break Region" then
             local slot, tool = findPickaxe()
             lines[#lines + 1] = slot and ("[✔] Pickaxe: %s (slot %d)"):format(niceName(tool), slot) or "[✖] Pickaxe: none on your hotbar"
             for _, id in ipairs(order) do lines[#lines + 1] = ("    will break %d x %s"):format(need[id], niceName(id)) end
@@ -50,11 +50,51 @@ return function(State)
         if #order == 0 then lines[#lines + 1] = "Nothing to do (region empty/full, or no valid cells)." end
         local chunks = 0
         for _, e in ipairs(plan) do if (e.line or 0) > chunks then chunks = e.line end end
-        local per = Options.Mode.Value == "Break Region" and Options.SwingInterval.Value or Options.Interval.Value
+        local per = B.currentMode() == "Break Region" and Options.SwingInterval.Value or Options.Interval.Value
         lines[#lines + 1] = ("Cells: %d  |  lines: %d  |  est. %.0fs"):format(#plan, chunks, #plan * per + chunks * 0.5)
         if note then lines[#lines + 1] = note end
         checklistLabel:SetText(table.concat(lines, "\n"))
     end
+
+    -- Performance: a checklist rebuilds the whole plan (~30 ms with Auto-Detect on) and the island changes
+    -- constantly while the Pollinator works, so each checklist is only rebuilt while its tab is on screen.
+    -- A hidden one is marked dirty and rebuilt within half a second of you opening its tab.
+    local UI = State.UI
+    local Library = UI.Library
+    local dirty = { build = true, plant = true }
+    local function tabVisible(context)
+        if Library.Toggled == false then return false end
+        local active = Library.ActiveTab
+        if active == nil then return true end
+        return active == (context == "plant" and UI.Tabs.Plant or UI.Tabs.Build)
+    end
+
+    local function refreshChecklist()
+        if S.unloaded or S.running then return end
+        pcall(updateGuides)
+        local saved = B.context
+        for _, entry in ipairs({ { "build", B.checklistLabel }, { "plant", B.plantChecklistLabel } }) do
+            if entry[2] then
+                if tabVisible(entry[1]) then
+                    dirty[entry[1]] = false
+                    B.context = entry[1]
+                    pcall(refreshChecklistFor, entry[2])
+                else
+                    dirty[entry[1]] = true
+                end
+            end
+        end
+        B.context = saved
+    end
+
+    task.spawn(function()
+        while not S.unloaded do
+            task.wait(0.5)
+            if not S.running and ((dirty.build and tabVisible("build")) or (dirty.plant and tabVisible("plant"))) then
+                pcall(refreshChecklist)
+            end
+        end
+    end)
 
     local pendingRefresh = false
     local function refreshSoon()
@@ -191,7 +231,8 @@ return function(State)
     end
 
     local function setProgress()
-        local progressLabel = B.progressLabel
+        -- only the tab whose Start launched the run shows its numbers
+        local progressLabel = B.context == "plant" and B.plantProgressLabel or B.progressLabel
         if progressLabel then
             pcall(function()
                 progressLabel:SetText(("Done %d / %d   (rejected %d, stops %d)"):format(S.placed, S.total, S.failed, S.moves))
@@ -359,8 +400,9 @@ return function(State)
         task.defer(function() pcall(refreshChecklist) end)
     end
 
-    local function startBuild()
+    local function startBuild(context)
         if S.running then return end
+        if context then B.context = context end
         local plan, note = buildPlan()
         if not plan then notify(tostring(note)) return end
         if #plan == 0 then notify("Nothing to do.") return end

@@ -267,7 +267,6 @@ local tabOrder = {
     { "Build",      "Build",      "hammer" },
     { "Plant",      "Planter",    "flower-2" },
     { "Schem",      "Schematic",  "clipboard" },
-    { "Run",        "Run",        "play" },
     { "Pollen",     "Pollinator", "flower" },
     { "Settings",   "Settings",   "settings" },
 }
@@ -338,7 +337,7 @@ local builderOk = loadGroup("Island Builder", {
     "Modules/Builder/Planner.lua",
     "Modules/Builder/Executor.lua",
     "Modules/Builder/Tabs.lua",
-}, { "Build", "Plant", "Schem", "Run" })
+}, { "Build", "Plant", "Schem" })
 
 if builderOk then
     loadGroup("Pollinator", {
