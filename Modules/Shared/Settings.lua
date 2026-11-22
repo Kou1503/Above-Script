@@ -23,10 +23,9 @@ return function(State)
     -- The webhook URL is a secret: it is stored in ABOVE_Obsidian/secrets/webhook.txt, never in a profile.
     table.insert(transientControls, "WebhookUrl")
 
-    -- Script1 782-821, verbatim apart from transientControls coming from State.UI.IgnoreIndexes.
+    -- Slider only (the "(exact value)" input boxes were removed on request); right-click still types a value.
     local function addSlider(group, id, label, min, max, default, rounding, callback)
-        local input
-        local slider = group:AddSlider(id, {
+        return group:AddSlider(id, {
             Text = label,
             Min = min,
             Max = max,
@@ -34,33 +33,7 @@ return function(State)
             Rounding = rounding,
             AllowRightClickInput = true,
             Callback = function(value)
-                if input and input.Value ~= tostring(value) then
-                    input:SetValue(tostring(value))
-                end
                 callback(value)
-            end,
-        })
-
-        -- The slider owns the saved value. The input only displays and edits it.
-        local inputId = id .. "_NumericInput"
-        table.insert(transientControls, inputId)
-        local scale = 10 ^ rounding
-        input = group:AddInput(inputId, {
-            Text = label .. " (exact value)",
-            Default = tostring(slider.Value),
-            Numeric = true,
-            Finished = true,
-            AllowEmpty = true,
-            ClearTextOnFocus = false,
-            Callback = function(text)
-                if not input or text == tostring(slider.Value) then return end
-                local value = tonumber(text)
-                if value then
-                    local rounded = math.round(math.clamp(value, min, max) * scale) / scale
-                    slider:SetValue(rounded)
-                end
-                local current = tostring(slider.Value)
-                if input.Value ~= current then input:SetValue(current) end
             end,
         })
     end
