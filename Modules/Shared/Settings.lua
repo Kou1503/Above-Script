@@ -46,6 +46,32 @@ return function(State)
     local AppearanceGroup = SettingsTab:AddLeftGroupbox("Appearance", "palette")
     local MenuGroup = SettingsTab:AddRightGroupbox("Menu and notifications", "settings")
 
+    local sources = SettingsTab:AddRightGroupbox("Module sources", "folder")
+    local summary = sources:AddLabel("Loading modules…", true)
+    local details = sources:AddLabel("", true)
+    details:SetVisible(false)
+    local expanded = false
+    sources:AddButton({ Text = "Show / hide module paths", Func = function()
+        expanded = not expanded
+        details:SetVisible(expanded)
+    end })
+    function UI.refreshModuleSources()
+        local paths, remote = {}, 0
+        for path, source in pairs(State.ModuleSources) do
+            paths[#paths + 1] = source .. " · " .. path
+            if source == "GitHub" then remote += 1 end
+        end
+        table.sort(paths)
+        local ref = State.Branch
+        local localPath = State.Config.LocalPath
+        if type(localPath) == "string" and localPath ~= "" then
+            summary:SetText(("Workspace · %s | %d GitHub fallbacks (%s)"):format(localPath, remote, ref))
+        else
+            summary:SetText("GitHub · " .. ref)
+        end
+        details:SetText(table.concat(paths, "\n"))
+    end
+
     addSlider(AppearanceGroup, "UIScale", "UI scale (%)", 60, 150, 100, 0, function(value)
         Library:SetDPIScale(value)
     end)
@@ -160,8 +186,34 @@ return function(State)
         return ok, err
     end
 
+    local function migratePlantLayout(settings)
+        local layout, axis
+        for _, setting in ipairs(settings) do
+            if type(setting) == "table" and setting.type == "Dropdown" then
+                if setting.idx == "PlantLayout" then layout = setting end
+                if setting.idx == "SplitAxis" then axis = setting end
+            end
+        end
+        if not layout then return false end
+        local oneFlower = axis and (axis.value == "A only" or axis.value == "None")
+        if layout.value == "4-Strip Mode (1-Block Dividers)" then
+            layout.value = "Four strips"
+        elseif layout.value == "Single / 2-Zone Split" then
+            layout.value = oneFlower and "One flower" or "Two zones"
+        else
+            return false
+        end
+        if oneFlower then axis.value = "Row (Z)" end
+        return true
+    end
+
     function SaveManager:LoadJSON(content)
         loadingProfiles += 1
+        local decoded, profile = pcall(HttpService.JSONDecode, HttpService, content)
+        if decoded and type(profile) == "table" and type(profile.objects) == "table"
+            and migratePlantLayout(profile.objects) then
+            content = HttpService:JSONEncode(profile)
+        end
         local ok, err = loadProfileJSON(self, content)
         if ok then
             flushAutosave()
@@ -172,7 +224,6 @@ return function(State)
             setToggle("BossChargedBow", false)
             setToggle("ExperimentalMiningStandoff", false)
             do
-                local profile = HttpService:JSONDecode(content)
                 local hasDiagnosticsToggle = false
                 for _, setting in profile.objects do
                     if setting.type == "Toggle" and setting.idx == "RecordSessionDiagnostics" then

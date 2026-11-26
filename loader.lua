@@ -52,6 +52,7 @@ local State = {
     Loaded = false,
     Unloaded = false,
     BaseUrl = BASE_URL,
+    Branch = BRANCH,
     SaveFolder = SAVE_FOLDER,
 
     Config = userConfig,
@@ -73,6 +74,7 @@ local State = {
     Pollinator = {},
 
     Modules = {},           -- path -> exports
+    ModuleSources = {},
     ModuleErrors = {},      -- path -> error string
     Connections = {},
     Cleanup = {},           -- functions run (newest first) on Unload
@@ -158,7 +160,7 @@ local function fetchSource(path)
     local localRoot = userConfig.LocalPath
     if type(localRoot) == "string" and localRoot ~= "" and type(readfile) == "function" then
         local ok, source = pcall(readfile, localRoot .. "/" .. path)
-        if ok and type(source) == "string" and source ~= "" then return source end
+        if ok and type(source) == "string" and source ~= "" then return source, nil, "Workspace" end
     end
     local url = BASE_URL .. path
     if userConfig.NoCache then url ..= "?t=" .. tostring(os.time()) .. tostring(math.random(1000, 9999)) end
@@ -167,13 +169,14 @@ local function fetchSource(path)
     if type(source) ~= "string" or source == "" or source:sub(1, 3) == "404" then
         return nil, "Empty or missing file: " .. url
     end
-    return source
+    return source, nil, "GitHub"
 end
 
 local function Import(path)
     if State.Modules[path] ~= nil then return State.Modules[path] end
-    local source, fetchErr = fetchSource(path)
+    local source, fetchErr, sourceName = fetchSource(path)
     if not source then error(fetchErr, 2) end
+    State.ModuleSources[path] = sourceName
     local chunk, compileErr = loadstring(source, "=" .. path)
     if not chunk then error("Compile error in " .. path .. ": " .. tostring(compileErr), 2) end
     local result = chunk()
@@ -335,7 +338,9 @@ local builderOk = loadGroup("Island Builder", {
     "Modules/Builder/Island.lua",
     "Modules/Builder/Region.lua",
     "Modules/Builder/Planner.lua",
+    "Modules/Builder/Preview.lua",
     "Modules/Builder/Executor.lua",
+    "Modules/Builder/SchematicLibrary.lua",
     "Modules/Builder/Tabs.lua",
 }, { "Build", "Plant", "Schem" })
 
@@ -358,6 +363,7 @@ loadGroup("Settings", { "Modules/Shared/Settings.lua" }, { "Settings" })
 -- Farm loop starts only after the profile is applied, and only if every Farm module loaded.
 if farmOk then TryImport("Modules/Farm/Loop.lua") end
 
+if UI.refreshModuleSources then UI.refreshModuleSources() end
 State.Loaded = true
 local failed = 0
 for _ in pairs(State.ModuleErrors) do failed += 1 end

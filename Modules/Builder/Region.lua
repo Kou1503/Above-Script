@@ -1,12 +1,12 @@
 --[[
-    Modules/Builder/Region.lua  -  region (Pos 1 / Pos 2), selection box, editor sliders, crosshair pick.
+    Modules/Builder/Region.lua  -  region (Pos 1 / Pos 2), selection box, editor sliders, player-position pick.
     Source: Script2 lines 250-361 (verbatim; regionLabel / syncing / refreshSoon read through B).
 ]]
 
 return function(State)
     local B = State.Builder
-    local S, Grid, CS, Island, BuildCtl = B.S, B.Grid, B.CS, B.Island, B.BuildCtl
-    local Options, LP = B.Options, B.LP
+    local S, Grid, CS = B.S, B.Grid, B.CS
+    local Options = B.Options
     local origin, islandBounds, clampCell, layerUnderPlayer, notify = B.origin, B.islandBounds, B.clampCell, B.layerUnderPlayer, B.notify
 
     ------------------------------------------------------------------------------------------
@@ -108,18 +108,8 @@ return function(State)
         if B.refreshSoon then B.refreshSoon() end
     end
 
-    -- cell under the crosshair (mouse target first, then the game's own aim helper), else my cell
+    -- Pick the player's grid column at the supporting layer under their feet.
     local function pickCell()
-        local ok, t = pcall(function() return LP:GetMouse().Target end)
-        if ok and t then
-            local inst = t
-            while inst and inst ~= Island and not inst:GetAttribute("CellKey") do inst = inst.Parent end
-            local k = inst and inst ~= Island and inst:GetAttribute("CellKey")
-            local c = k and Grid.fromKey(k)
-            if c then return Grid.cell(c.x, c.y, c.z) end
-        end
-        local okc, aimed = pcall(BuildCtl.aimedBlockCell)
-        if okc and type(aimed) == "table" and aimed.x then return Grid.cell(aimed.x, aimed.y, aimed.z) end
         local y, pc = layerUnderPlayer()
         if y and pc then return Grid.cell(pc.x, y, pc.z) end
     end

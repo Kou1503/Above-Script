@@ -15,8 +15,10 @@ return function(State)
     -- Build and Planter are separate tabs with their own Start button. B.context says which one is
     -- planning ("build" uses the Build tab's Mode dropdown, "plant" is always the Checkerboard Planter).
     B.context = "build"
-    function B.currentMode()
-        if B.context == "plant" then return "Checkerboard Planter" end
+    function B.currentMode(context)
+        context = context or B.context
+        if context == "plant" then return "Checkerboard Planter" end
+        if context == "schematic" then return "Schematic Paste" end
         return Options.Mode.Value
     end
 
@@ -32,10 +34,10 @@ return function(State)
         return false
     end
 
-    local function lineOrder(entries, sim, opt)
+    local function lineOrder(entries, sim, opt, usePasteOrder)
         -- direction of travel follows Pos 1 -> Pos 2 (ascending when there is no explicit region)
         local sign = { x = 1, y = 1, z = 1 }
-        if B.currentMode() ~= "Schematic Paste" and not Toggles.AutoLayer.Value and S.pos1 and S.pos2 then
+        if not usePasteOrder and not Toggles.AutoLayer.Value and S.pos1 and S.pos2 then
             sign.x = S.pos2.x >= S.pos1.x and 1 or -1
             sign.y = S.pos2.y >= S.pos1.y and 1 or -1
             sign.z = S.pos2.z >= S.pos1.z and 1 or -1
@@ -167,7 +169,7 @@ return function(State)
         local bnd = islandBounds()
         local tier = Island:GetAttribute("ExpansionTier") or 0
         local edge = 2 * bnd.horizontal + 1                                  -- full edge-to-edge width for this tier
-        local cap = capacityInfo()                                           -- block capacity for this tier
+        local cap = B.blockCapacity()                                           -- block capacity for this tier
         local x0, x1, z0, z1, floorY
         if Toggles.AutoLayer.Value then
             local y = layerUnderPlayer()
@@ -311,37 +313,45 @@ return function(State)
         if guideFolder then pcall(function() guideFolder:Destroy() end) guideFolder = nil end
     end
 
+    local STRIP_MODE = "Four strips"
     local function updateGuides()
-        clearGuides()
         -- Guides show when either tab uses the 4-strip layout (both tabs are visible as separate tabs now).
         local active = Options.Mode.Value == "4-Strip Farm Base"
-            or Options.PlantLayout.Value == "4-Strip Mode (1-Block Dividers)"
-        if not active then return end
-        local g = stripGeometry()
-        if not g then return end
-        guideFolder = Instance.new("Folder")
-        guideFolder.Name = "ABOVE_StripGuides"
-        guideFolder.Parent = workspace
+            or Options.PlantLayout.Value == STRIP_MODE
+        local g = active and stripGeometry()
+        if not g then
+            clearGuides()
+            return
+        end
+        if not guideFolder then
+            guideFolder = Instance.new("Folder")
+            guideFolder.Name = "ABOVE_StripGuides"
+            guideFolder.Parent = workspace
+        end
         local o = origin()
         for i, d in ipairs(g.dividers) do
             local lo = g.splitX and Grid.cell(d, g.floorY + 1, g.z0) or Grid.cell(g.x0, g.floorY + 1, d)
             local hi = g.splitX and Grid.cell(d, g.floorY + 1, g.z1) or Grid.cell(g.x1, g.floorY + 1, d)
             local a = Grid.cellToWorld(o, lo) - Vector3.one * (CS / 2)
             local b = Grid.cellToWorld(o, hi) + Vector3.one * (CS / 2)
-            local part = Instance.new("Part")
-            part.Name = "Divider" .. i
-            part.Anchored, part.CanCollide, part.CanQuery, part.CanTouch = true, false, false, false
-            part.Transparency = 1
-            part.Size = b - a
-            part.Position = (a + b) / 2
-            part.Parent = guideFolder
-            local box = Instance.new("SelectionBox")
-            box.Adornee = part
-            box.LineThickness = 0.03
-            box.Color3 = Color3.fromRGB(255, 170, 60)
-            box.SurfaceColor3 = Color3.fromRGB(255, 170, 60)
-            box.SurfaceTransparency = 0.88
-            box.Parent = part
+            local part = guideFolder:FindFirstChild("Divider" .. i)
+            if not part then
+                part = Instance.new("Part")
+                part.Name = "Divider" .. i
+                part.Anchored, part.CanCollide, part.CanQuery, part.CanTouch = true, false, false, false
+                part.Transparency = 1
+                part.Parent = guideFolder
+                local box = Instance.new("SelectionBox")
+                box.Adornee = part
+                box.LineThickness = 0.03
+                box.Color3 = Color3.fromRGB(255, 170, 60)
+                box.SurfaceColor3 = Color3.fromRGB(255, 170, 60)
+                box.SurfaceTransparency = 0.88
+                box.Parent = part
+            end
+            local size, position = b - a, (a + b) / 2
+            if part.Size ~= size then part.Size = size end
+            if part.Position ~= position then part.Position = position end
         end
     end
     -- Safety net if a later Builder module fails to load (Builder/Tabs' unload also clears it).
@@ -367,7 +377,6 @@ return function(State)
     end
 
     local STRIP_SKIP = "None / Skip"
-    local STRIP_MODE = "4-Strip Mode (1-Block Dividers)"
 
     local function planPlantStrips()
         local g, err = stripGeometry()
@@ -389,7 +398,7 @@ return function(State)
                         local supported = (not Toggles.RequireSupport.Value) or S.occ[key(x, flowerY - 1, z)]
                         local cell = Grid.cell(x, flowerY, z)
                         if supported and Grid.isInBounds(cell, b) and not protected(cell) then
-                            cells[#cells + 1] = { cell = cell, id = flower, yaw = 0, key = key(x, flowerY, z), kind = "place" }
+                            cells[#cells + 1] = { zone = tostring(s), cell = cell, id = flower, yaw = 0, key = key(x, flowerY, z), kind = "place" }
                         end
                     end
                 end
@@ -427,7 +436,7 @@ return function(State)
         if not lo then return nil, hi end
         local fa, fb = Options.FlowerA.Value, Options.FlowerB.Value
         if not fa or fa == "" then return nil, "Pick Flower A." end
-        local axis = Options.SplitAxis.Value
+        local axis = Options.PlantLayout.Value == "One flower" and "A only" or Options.SplitAxis.Value
         if axis ~= "Row (Z)" and axis ~= "Column (X)" then axis = "A only" end      -- also covers an old saved "None"
         local parity = Options.Parity.Value == "Odd" and 1 or 0
         if axis ~= "A only" and (not fb or fb == "") then return nil, "Pick Flower B for the second zone." end
@@ -439,7 +448,7 @@ return function(State)
             c0 = axis == "Row (Z)" and lo.Z or lo.X
             c1 = axis == "Row (Z)" and hi.Z or hi.X
             local n = c1 - c0 + 1
-            local gap = math.min(Options.GapWidth.Value, n)
+            local gap = math.min(math.round(Options.GapWidth.Value), n)
             local side = math.floor((n - gap) / 2)                 -- cells each flower may use from its own end
             gapLo, gapHi = c0 + side, c1 - side                    -- everything in between stays empty
         end
@@ -461,7 +470,7 @@ return function(State)
                     if not skip then
                         local zn = zones[zone]
                         if not zn then zn = { base = zone == "A" and fa or fb, cells = {} } zones[zone] = zn end
-                        table.insert(zn.cells, { cell = cell, id = zn.base, yaw = 0, key = key(x, y, z), kind = "place" })
+                        table.insert(zn.cells, { zone = zone, cell = cell, id = zn.base, yaw = 0, key = key(x, y, z), kind = "place" })
                     end
                 end
             end
@@ -502,7 +511,7 @@ return function(State)
             local mid = ("Empty middle band: %d cells wide (cells %d..%d)."):format(gapHi - gapLo + 1, gapLo, gapHi)
             note = note and (note .. "\n" .. mid) or mid
         else
-            local off = "Run along = 'A only': Flower B is NOT planted."
+            local off = "One flower: " .. niceName(fa)
             note = note and (note .. "\n" .. off) or off
         end
         return plan, note
@@ -515,10 +524,58 @@ return function(State)
         else return -dz, dx end
     end
 
-    local function planPaste()
-        if not S.clip then return nil, "Copy a region first." end
-        local rot = tonumber(Options.PasteRot.Value)
-        local r = rot / 90
+    local anchors = {
+        ["Copied corner"] = {0, 0},
+        ["Center"] = {0.5, 0.5},
+        ["High X corner"] = {1, 0},
+        ["High Z corner"] = {0, 1},
+        ["High X and Z corner"] = {1, 1},
+    }
+
+    local function pasteTransform(base)
+        local size = S.clip.size
+        local mirror = Options.PasteMirror.Value
+        local anchor = anchors[Options.PasteAnchor.Value] or anchors["Copied corner"]
+        local rotation = tonumber(Options.PasteRot.Value)
+        local ax = math.floor((size[1] - 1) * anchor[1])
+        local az = math.floor((size[3] - 1) * anchor[2])
+        local rx, rz = rotateOffset(ax, az, rotation / 90)
+        return {
+            rotation = rotation, mirror = mirror, maxX = size[1] - 1, maxZ = size[3] - 1,
+            origin = Grid.cell(base.x - rx, base.y, base.z - rz),
+            from = Options.SwapMaterialFrom.Value, to = Options.SwapMaterialTo.Value,
+        }
+    end
+
+    local function mirroredBlock(block, transform)
+        local x, z, yaw = block.dx, block.dz, block.rot
+        if transform.mirror == "Mirror X" then
+            x, yaw = transform.maxX - x, -yaw
+        elseif transform.mirror == "Mirror Z" then
+            z, yaw = transform.maxZ - z, 180 - yaw
+        end
+        return x, z, yaw % 360
+    end
+
+    local function pasteCell(block, transform)
+        local x, z, yaw = mirroredBlock(block, transform)
+        x, z = rotateOffset(x, z, transform.rotation / 90)
+        local base = transform.origin
+        return Grid.cell(base.x + x, base.y + block.dy, base.z + z), (yaw + transform.rotation) % 360
+    end
+
+    local function pasteMaterial(block)
+        local replacement = Options.SwapMaterialTo.Value
+        if replacement and block.id == Options.SwapMaterialFrom.Value then return replacement end
+        return block.id
+    end
+
+    local function pasteTransformKey(transform)
+        return table.concat({Grid.key(transform.origin), transform.rotation, transform.mirror,
+            transform.from or "", transform.to or ""}, "/")
+    end
+
+    local function playerPasteBase()
         local rp = hrp()
         if not rp then return nil, "No character." end
         local base = Grid.worldToCell(origin(), rp.Position)
@@ -526,26 +583,74 @@ return function(State)
             local y = layerUnderPlayer()
             if y then base = Grid.cell(base.x, y + 1, base.z) end
         end
+        return base
+    end
+
+    local function pasteBase()
+        if Options.PastePosition and Options.PastePosition.Value == "Fixed coordinates" then
+            return Grid.cell(math.round(Options.PasteX.Value), math.round(Options.PasteY.Value), math.round(Options.PasteZ.Value))
+        end
+        return playerPasteBase()
+    end
+
+    function B.buildRegionSummary()
+        local mode = Options.Mode.Value
+        local width, height, depth, source, y
+        if mode == "Schematic Paste" then
+            if not S.clip then return "Copy a region on Schematic to see its paste area." end
+            local base, err = pasteBase()
+            if not base then return err end
+            local size = S.clip.size
+            local transform = pasteTransform(base)
+            local dx, dz = rotateOffset(size[1] - 1, size[3] - 1, transform.rotation / 90)
+            local corner = transform.origin
+            return ("Paste area from (%d, %d, %d) to (%d, %d, %d)"):format(
+                corner.x + math.min(dx, 0), corner.y, corner.z + math.min(dz, 0),
+                corner.x + math.max(dx, 0), corner.y + size[2] - 1, corner.z + math.max(dz, 0))
+        elseif mode == "4-Strip Farm Base" then
+            local g, err = stripGeometry()
+            if not g then return err end
+            width, height, depth, y = g.x1 - g.x0 + 1, 2, g.z1 - g.z0 + 1, g.floorY
+            source = Toggles.AutoLayer.Value and "Auto-sized four-strip base" or "Selected four-strip base"
+        else
+            local lo, hi = region(false)
+            if not lo then return hi end
+            width, height, depth, y = hi.X - lo.X + 1, hi.Y - lo.Y + 1, hi.Z - lo.Z + 1, lo.Y
+            source = Toggles.AutoLayer.Value and "Using full island layer" or "Selected region"
+        end
+        return ("%s at Y %d\n%d wide × %d high × %d deep"):format(source, y, width, height, depth)
+    end
+
+    local function planPaste()
+        if not S.clip then return nil, "Copy a region first." end
+        local base, err = pasteBase()
+        if not base then return nil, err end
+        local transform = pasteTransform(base)
         local b = islandBounds()
-        local list, outside = {}, 0
+        local list, outside, occupied, reserved = {}, 0, 0, 0
         for _, blk in ipairs(S.clip.blocks) do
-            local rx, rz = rotateOffset(blk.dx, blk.dz, r)
-            local c = Grid.cell(base.x + rx, base.y + blk.dy, base.z + rz)
+            local c, yaw = pasteCell(blk, transform)
             local k = Grid.key(c)
             if not Grid.isInBounds(c, b) then
                 outside += 1                                   -- beyond the world limit: never sent
-            elseif not S.occ[k] and not protected(c) then
-                list[#list + 1] = { cell = c, id = blk.id, yaw = (blk.rot + rot) % 360, key = k, kind = "place" }
+            elseif S.occ[k] then occupied += 1
+            elseif protected(c) then reserved += 1
+            else
+                list[#list + 1] = { cell = c, id = pasteMaterial(blk), yaw = yaw, key = k, kind = "place" }
             end
         end
-        local out, left = lineOrder(list, copyOcc())
+        local out, left = lineOrder(list, copyOcc(), nil, true)
         local capNote
         out, capNote = trimToCapacity(out)
-        local notes = {}
-        if outside > 0 then notes[#notes + 1] = ("%d blocks fall beyond the world limit (X/Z +-%d) and are ignored."):format(outside, b.horizontal) end
-        if left and left > 0 then notes[#notes + 1] = left .. " blocks have no adjacent support and were skipped." end
-        if capNote then notes[#notes + 1] = capNote end
-        return out, #notes > 0 and table.concat(notes, "\n") or nil
+        local ready = {}
+        for _, entry in ipairs(out) do ready[entry.key] = true end
+        B.pasteAssessment = {clip = S.clip, destination = pasteTransformKey(transform),
+            version = S.occupancyVersion, ready = ready}
+        local notes = {("%d copied · %d planned · %d occupied · %d unsupported"):format(#S.clip.blocks, #out, occupied, left or 0)}
+        if reserved > 0 then table.insert(notes, ("%d protected"):format(reserved)) end
+        if outside > 0 then table.insert(notes, ("%d outside island bounds"):format(outside)) end
+        if capNote then table.insert(notes, ("%d exceed capacity"):format(#list - (left or 0) - #out)) end
+        return out, table.concat(notes, "\n")
     end
 
     local function planBreak()
@@ -566,10 +671,11 @@ return function(State)
         return (lineOrder(list, nil))
     end
 
-    local function buildPlan()
-        local mode = B.currentMode()
+    local function buildPlan(context)
+        context = context or B.context
+        local mode = B.currentMode(context)
         if mode == "Checkerboard Planter" then
-            if B.context ~= "plant" then return nil, "Pick a build mode (the planter has its own tab now)." end
+            if context ~= "plant" then return nil, "Pick a build mode (the planter has its own tab now)." end
             return planPlant()
         elseif mode == "Fill Island Layer" then return planFill()
         elseif mode == "Break Region" then return planBreak()
@@ -581,6 +687,9 @@ return function(State)
     B.planFill, B.STRIP, B.stripGeometry, B.stripSummary, B.planStripBase = planFill, STRIP, stripGeometry, stripSummary, planStripBase
     B.clearGuides, B.updateGuides, B.variantIds = clearGuides, updateGuides, variantIds
     B.STRIP_SKIP, B.STRIP_MODE = STRIP_SKIP, STRIP_MODE
+    B.pasteTransform, B.mirroredBlock, B.pasteCell = pasteTransform, mirroredBlock, pasteCell
+    B.pasteMaterial, B.pasteTransformKey = pasteMaterial, pasteTransformKey
+    B.pasteBase, B.playerPasteBase = pasteBase, playerPasteBase
     B.planPlantStrips, B.planPlant, B.rotateOffset, B.planPaste, B.planBreak, B.buildPlan =
         planPlantStrips, planPlant, rotateOffset, planPaste, planBreak, buildPlan
     return true

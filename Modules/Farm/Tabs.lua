@@ -232,14 +232,6 @@ return function(State)
             F.nextPrimaryScan = 0
         end,
     })
-    KillGroup:AddToggle("AutoReturnToHub", {
-        Text = "Auto return to Hub",
-        Tooltip = "Walks to your island's HUB portal when you return home, then resumes farming in the Hub.",
-        Default = F.autoReturnToHub,
-        Callback = function(value)
-            F.autoReturnToHub = value
-        end,
-    })
     KillGroup:AddDropdown("BowAim", {
         Text = "Bow aim",
         Tooltip = "Settled checks the arrow path and waits for steady aim. Standard uses the original overhead shots.",
@@ -399,6 +391,14 @@ return function(State)
         end)
     end
 
+    MovementGroup:AddToggle("AutoReturnToHub", {
+        Text = "Auto return to Hub",
+        Tooltip = "Walks to your island's HUB portal when you return home, then resumes farming in the Hub.",
+        Default = F.autoReturnToHub,
+        Callback = function(value)
+            F.autoReturnToHub = value
+        end,
+    })
     MovementGroup:AddLabel("Right-click any slider to type an exact value.", true)
     addSlider(MovementGroup, "FlightSpeed", "Flight speed", 60, 500, F.flightSpeed, 0, function(value)
         F.flightSpeed = value

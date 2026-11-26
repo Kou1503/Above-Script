@@ -103,25 +103,42 @@ return function(State)
         return Grid.cell(x, y, z), (x ~= c.x or y ~= c.y or z ~= c.z)
     end
 
-    local function capacityInfo()
+    local function blockCapacity()
         local tier = Island:GetAttribute("ExpansionTier") or 0
         local exp = Config.Build.Expansion and Config.Build.Expansion[tier + 1]
-        local cap = (exp and exp.blockCapacity) or Config.Build.MaxPlacedBlocks
-        local used = 0
-        for _, id in pairs(S.occ) do if Config.Build.Blocks[id] then used += 1 end end
-        return cap, used
+        return (exp and exp.blockCapacity) or Config.Build.MaxPlacedBlocks
+    end
+
+    local usedBlocks = 0
+    S.occupiedCells = 0
+    S.occupancyVersion = 0
+    local function setOccupant(k, id)
+        local old = S.occ[k]
+        if old == id then return end
+        if old and Config.Build.Blocks[old] then usedBlocks -= 1 end
+        if id and Config.Build.Blocks[id] then usedBlocks += 1 end
+        if old == nil then S.occupiedCells += 1 elseif id == nil then S.occupiedCells -= 1 end
+        S.occ[k] = id
+        S.occupancyVersion += 1
+    end
+
+    local function capacityInfo()
+        return blockCapacity(), usedBlocks
     end
 
     -- refreshSoon is defined in Executor.lua and published as B.refreshSoon.
     local function indexPart(inst)
         local k = inst:GetAttribute("CellKey")
         if k then
-            S.occ[k] = inst:GetAttribute("BlockId") or inst.Name
+            setOccupant(k, inst:GetAttribute("BlockId") or inst.Name)
             if inst:IsA("BasePart") then S.parts[k] = inst end
-            return
+            return true
         end
         local fk = inst:GetAttribute("FlowerCell")          -- planted flowers: the cell is taken, but it is not a block
-        if fk then S.occ[fk] = inst:GetAttribute("FlowerId") or "Flower" end
+        if fk then
+            setOccupant(fk, inst:GetAttribute("FlowerId") or "Flower")
+            return true
+        end
     end
     -- Safety net if a later Builder module fails to load (Builder/Tabs' unload also disconnects these).
     State.OnCleanup(function()
@@ -131,11 +148,18 @@ return function(State)
     end)
     for _, d in ipairs(Island:GetDescendants()) do indexPart(d) end
     track(Island.DescendantAdded:Connect(function(d)
-        task.defer(function() indexPart(d) if B.refreshSoon then B.refreshSoon() end end)
+        task.defer(function()
+            if not S.unloaded and d:IsDescendantOf(Island) and indexPart(d) and B.refreshSoon then B.refreshSoon() end
+        end)
     end))
     track(Island.DescendantRemoving:Connect(function(d)
         local k = d:GetAttribute("CellKey") or d:GetAttribute("FlowerCell")
-        if k and S.occ[k] then S.occ[k] = nil S.parts[k] = nil if B.refreshSoon then B.refreshSoon() end end
+        if k and S.occ[k] then setOccupant(k, nil) S.parts[k] = nil if B.refreshSoon then B.refreshSoon() end end
+    end))
+
+    track(Island:GetAttributeChangedSignal("ExpansionTier"):Connect(function()
+        S.occupancyVersion += 1
+        if B.refreshSoon then B.refreshSoon() end
     end))
 
     local function layerUnderPlayer()
@@ -244,6 +268,7 @@ return function(State)
     B.S, B.track, B.notify = S, track, notify
     B.Island = Island
     B.origin, B.islandBounds, B.hrp, B.protected, B.key = origin, islandBounds, hrp, protected, key
+    B.setOccupant, B.blockCapacity = setOccupant, blockCapacity
     B.clampCell, B.capacityInfo, B.indexPart, B.layerUnderPlayer = clampCell, capacityInfo, indexPart, layerUnderPlayer
     B.buildState, B.isCounts, B.inventory, B.niceName = buildState, isCounts, inventory, niceName
     B.ensureHeld, B.findPickaxe, B.restoreHotbar = ensureHeld, findPickaxe, restoreHotbar

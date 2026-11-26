@@ -25,8 +25,9 @@ return function(State)
     B.checklistLabel, B.progressLabel = nil, nil
     B.plantChecklistLabel, B.plantProgressLabel = nil, nil
 
-    local function refreshChecklistFor(checklistLabel)
-        local ok, plan, note = pcall(buildPlan)
+    local function refreshChecklistFor(checklistLabel, context)
+        local ok, plan, note = pcall(buildPlan, context)
+        if context == "plant" and B.updatePlantMap then B.updatePlantMap(ok and plan or nil) end
         if not ok then checklistLabel:SetText("Plan error: " .. tostring(plan)) return end
         if not plan then checklistLabel:SetText(tostring(note)) return end
         local need, order = {}, {}
@@ -35,7 +36,7 @@ return function(State)
             need[e.id] += 1
         end
         local lines = {}
-        if B.currentMode() == "Break Region" then
+        if B.currentMode(context) == "Break Region" then
             local slot, tool = findPickaxe()
             lines[#lines + 1] = slot and ("[✔] Pickaxe: %s (slot %d)"):format(niceName(tool), slot) or "[✖] Pickaxe: none on your hotbar"
             for _, id in ipairs(order) do lines[#lines + 1] = ("    will break %d x %s"):format(need[id], niceName(id)) end
@@ -50,7 +51,7 @@ return function(State)
         if #order == 0 then lines[#lines + 1] = "Nothing to do (region empty/full, or no valid cells)." end
         local chunks = 0
         for _, e in ipairs(plan) do if (e.line or 0) > chunks then chunks = e.line end end
-        local per = B.currentMode() == "Break Region" and Options.SwingInterval.Value or Options.Interval.Value
+        local per = B.currentMode(context) == "Break Region" and Options.SwingInterval.Value or Options.Interval.Value
         lines[#lines + 1] = ("Cells: %d  |  lines: %d  |  est. %.0fs"):format(#plan, chunks, #plan * per + chunks * 0.5)
         if note then lines[#lines + 1] = note end
         checklistLabel:SetText(table.concat(lines, "\n"))
@@ -61,36 +62,52 @@ return function(State)
     -- A hidden one is marked dirty and rebuilt within half a second of you opening its tab.
     local UI = State.UI
     local Library = UI.Library
-    local dirty = { build = true, plant = true }
+    local tabs = { build = UI.Tabs.Build, plant = UI.Tabs.Plant, schematic = UI.Tabs.Schem }
+    local dirty = { build = true, plant = true, schematic = true }
     local function tabVisible(context)
         if Library.Toggled == false then return false end
         local active = Library.ActiveTab
         if active == nil then return true end
-        return active == (context == "plant" and UI.Tabs.Plant or UI.Tabs.Build)
+        return active == tabs[context]
     end
 
+    local refreshing
     local function refreshChecklist()
         if S.unloaded or S.running then return end
+        if refreshing then
+            for context in pairs(dirty) do dirty[context] = true end
+            return
+        end
+        refreshing = true
         pcall(updateGuides)
-        local saved = B.context
-        for _, entry in ipairs({ { "build", B.checklistLabel }, { "plant", B.plantChecklistLabel } }) do
-            if entry[2] then
-                if tabVisible(entry[1]) then
-                    dirty[entry[1]] = false
-                    B.context = entry[1]
-                    pcall(refreshChecklistFor, entry[2])
-                else
-                    dirty[entry[1]] = true
+        for _, entry in ipairs({ { "build", B.checklistLabel }, { "plant", B.plantChecklistLabel }, { "schematic", B.schematicChecklistLabel } }) do
+            local context, label = entry[1], entry[2]
+            if S.unloaded or S.running then break end
+            if label then
+                dirty[context] = not tabVisible(context)
+                if not dirty[context] then
+                    local ok, err = pcall(refreshChecklistFor, label, context)
+                    if not ok and not S.unloaded then warn("[ABOVE Builder] Checklist: " .. tostring(err)) end
                 end
             end
         end
-        B.context = saved
+        refreshing = false
     end
 
+    local lastRegionText
     task.spawn(function()
         while not S.unloaded do
             task.wait(0.5)
-            if not S.running and ((dirty.build and tabVisible("build")) or (dirty.plant and tabVisible("plant"))) then
+            if S.unloaded then break end
+            if B.effectiveRegionLabel and tabVisible("build") then
+                local summary = B.buildRegionSummary()
+                if lastRegionText ~= summary then
+                    B.effectiveRegionLabel:SetText(summary)
+                    lastRegionText = summary
+                end
+            end
+            if not S.running and ((dirty.build and tabVisible("build")) or (dirty.plant and tabVisible("plant"))
+                or (dirty.schematic and tabVisible("schematic"))) then
                 pcall(refreshChecklist)
             end
         end
@@ -113,8 +130,11 @@ return function(State)
         local r = hrp()
         if not r then return false end
         mover.home = r.CFrame
-        local att = Instance.new("Attachment") att.Name = "ABOVE_BuilderAtt" att.Parent = r
+        local att = Instance.new("Attachment")
+        mover.att = att
+        att.Name = "ABOVE_BuilderAtt" att.Parent = r
         local ap = Instance.new("AlignPosition")
+        mover.ap = ap
         ap.Name = "ABOVE_BuilderAlign"
         ap.Mode = Enum.PositionAlignmentMode.OneAttachment
         ap.Attachment0 = att
@@ -124,7 +144,6 @@ return function(State)
         ap.RigidityEnabled = false
         ap.Position = r.Position
         ap.Parent = r
-        mover.ap, mover.att = ap, att
         return true
     end
 
@@ -194,7 +213,7 @@ return function(State)
         if ok == true then
             S.placed += 1
             S.rejStreak = 0
-            S.occ[e.key] = e.id
+            B.setOccupant(e.key, e.id)
         else
             S.rejStreak += 1
             e.tries = (e.tries or 0) + 1
@@ -230,21 +249,20 @@ return function(State)
         while inflight > 0 and os.clock() - t0 < maxWait and not S.cancel do task.wait(0.05) end
     end
 
-    local function setProgress()
+    local function setProgress(message)
         -- only the tab whose Start launched the run shows its numbers
         local progressLabel = B.context == "plant" and B.plantProgressLabel or B.progressLabel
+        if B.context == "schematic" then progressLabel = B.schematicProgressLabel end
         if progressLabel then
             pcall(function()
-                progressLabel:SetText(("Done %d / %d   (rejected %d, stops %d)"):format(S.placed, S.total, S.failed, S.moves))
+                progressLabel:SetText(message or ("Done %d / %d   (rejected %d, stops %d)"):format(S.placed, S.total, S.failed, S.moves))
             end)
         end
     end
 
-    local function runPlan(plan)
-        if S.running then notify("Already running.") return end
-        local locked, holder = State.Acquire("builder")
-        if not locked then notify("The " .. tostring(holder) .. " is using your character - stop it first.") return end
-        S.running, S.cancel = true, false
+    local activeRun
+    local function executePlan(plan, run)
+        B.clearPastePreview()
         S.placed, S.failed, S.total, S.retry, S.moves, S.moveTime, S.rejStreak, S.swingBoost = 0, 0, #plan, {}, 0, 0, 0, 0
         S.startedAt = os.clock()
         pending, inflight = {}, 0
@@ -252,11 +270,14 @@ return function(State)
         local reach = isBreak and BREAK_REACH or PLACE_REACH
 
         local char = LP.Character
-        local dieConn = track(char and char:FindFirstChildOfClass("Humanoid") and char:FindFirstChildOfClass("Humanoid").Died:Connect(function() S.cancel = true end))
-        if not startMover() then S.running = false State.Release("builder") notify("No character.") return end
+        local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            run.died = humanoid.Died:Connect(function() S.cancel = true end)
+        end
+        if not startMover() then error("No character.", 0) end
 
         task.spawn(function()
-            while S.running and not S.unloaded do setProgress() task.wait(0.25) end
+            while activeRun == run and not S.unloaded do setProgress() task.wait(0.25) end
         end)
 
         local function parkTarget(e)
@@ -286,7 +307,7 @@ return function(State)
             local teleport = Options.MoveMode.Value == "Teleport"
             task.spawn(function()
                 task.wait(0.12)
-                if S.cancel or not S.running or not mover.ap or inReach(nextE.cell, reach) then return end
+                if activeRun ~= run or S.cancel or not mover.ap or inReach(nextE.cell, reach) then return end
                 local r = hrp()
                 if not r then return end
                 S.moves += 1
@@ -352,7 +373,7 @@ return function(State)
         if isBreak then
             -- progress while breaking: count removed parts
             local watcher = task.spawn(function()
-                while S.running and not S.unloaded do
+                while activeRun == run and not S.unloaded do
                     local n = 0
                     for _, e in ipairs(plan) do if not e.part.Parent then n += 1 end end
                     S.placed = n
@@ -387,23 +408,46 @@ return function(State)
             end
         end
 
-        local wasCancelled = S.cancel
-        stopMover(Toggles.ReturnHome.Value)
-        restoreHotbar()
-        if dieConn then dieConn:Disconnect() end
+    end
+
+    local function runPlan(plan, context)
+        if S.unloaded then return end
+        if S.running then notify("Already running.") return end
+        local locked, holder = State.Acquire("builder")
+        if not locked then notify("Stop " .. tostring(holder) .. " first.") return end
+        local run = {}
+        activeRun = run
+        B.context = context or B.context
+        S.running, S.cancel = true, false
+        S.startedAt = os.clock()
+        local ok, err = pcall(executePlan, plan, run)
+        activeRun = nil
+        local cancelled = S.cancel
+        S.cancel = true
+        pending, inflight = {}, 0
+        if run.died then pcall(function() run.died:Disconnect() end) end
+        local moved, moveErr = pcall(stopMover, ok and Toggles.ReturnHome.Value)
+        if not moved then pcall(stopMover, false) end
+        local restored, restoreErr = pcall(restoreHotbar)
         S.running = false
         State.Release("builder")
-        S.lastRun = { mode = Options.MoveMode.Value, kind = isBreak and "break" or "place", done = S.placed, total = S.total,
+        local problem = (not ok and err) or (not moved and moveErr) or (not restored and restoreErr)
+        S.lastRun = { mode = Options.MoveMode.Value, kind = plan[1].kind, done = S.placed, total = S.total,
             failed = S.failed, secs = os.clock() - S.startedAt, moves = S.moves, moveTime = S.moveTime }
-        setProgress()
-        notify(wasCancelled and "Stopped." or ("Done: %d / %d in %.1fs (%d stops)."):format(S.placed, S.total, S.lastRun.secs, S.moves), 5)
+        local message
+        if problem then message = "Run failed: " .. tostring(problem)
+        elseif cancelled then message = ("Stopped after %d / %d."):format(S.placed, S.total)
+        else message = ("Finished %d / %d in %.1fs."):format(S.placed, S.total, S.lastRun.secs) end
+        setProgress(message)
+        notify(message, 5)
         task.defer(function() pcall(refreshChecklist) end)
     end
 
     local function startBuild(context)
-        if S.running then return end
-        if context then B.context = context end
-        local plan, note = buildPlan()
+        if S.unloaded or S.running then return end
+        context = context or B.context
+        local ok, plan, note = pcall(buildPlan, context)
+        if not ok then notify("Plan error: " .. tostring(plan)) return end
         if not plan then notify(tostring(note)) return end
         if #plan == 0 then notify("Nothing to do.") return end
 
@@ -430,15 +474,7 @@ return function(State)
                 if #plan == 0 then notify("You own none of the required items.") return end
             end
         end
-        task.spawn(function()
-            -- Same as task.spawn(runPlan, plan); the pcall only makes sure an error never leaves the
-            -- activity lock held (which would pause the Farm until the hub is reloaded).
-            local ok, err = pcall(runPlan, plan)
-            if not ok then
-                State.Release("builder")
-                warn("[ABOVE Builder] run failed: " .. tostring(err))
-            end
-        end)
+        task.spawn(runPlan, plan, context)
     end
 
     ------------------------------------------------------------------------------------------
@@ -448,20 +484,40 @@ return function(State)
         if not (S.pos1 and S.pos2) then notify("Set a region first.") return end
         local lo, hi = boxOf(S.pos1, S.pos2)
         local blocks, skipped = {}, 0
-        for k, id in pairs(S.occ) do
-            local c = Grid.fromKey(k)
-            if c and c.x >= lo.X and c.x <= hi.X and c.y >= lo.Y and c.y <= hi.Y and c.z >= lo.Z and c.z <= hi.Z then
-                if Config.Build.Blocks[id] and not (Config.Build.Footprints and Config.Build.Footprints[id]) then
-                    local part = S.parts[k]
-                    blocks[#blocks + 1] = { dx = c.x - lo.X, dy = c.y - lo.Y, dz = c.z - lo.Z, id = id,
-                        rot = (part and part:GetAttribute("Rotation")) or 0 }
-                else
-                    skipped += 1
+        local function collect(c, k, id)
+            if Config.Build.Blocks[id] and not (Config.Build.Footprints and Config.Build.Footprints[id]) then
+                local part = S.parts[k]
+                blocks[#blocks + 1] = { dx = c.x - lo.X, dy = c.y - lo.Y, dz = c.z - lo.Z, id = id,
+                    rot = (part and part:GetAttribute("Rotation")) or 0 }
+            else
+                skipped += 1
+            end
+        end
+        local volume = (hi.X - lo.X + 1) * (hi.Y - lo.Y + 1) * (hi.Z - lo.Z + 1)
+        if volume < S.occupiedCells then
+            for x = lo.X, hi.X do for y = lo.Y, hi.Y do for z = lo.Z, hi.Z do
+                local k = B.key(x, y, z)
+                if S.occ[k] then collect(Grid.cell(x, y, z), k, S.occ[k]) end
+            end end end
+        else
+            for k, id in pairs(S.occ) do
+                local c = Grid.fromKey(k)
+                if c and c.x >= lo.X and c.x <= hi.X and c.y >= lo.Y and c.y <= hi.Y and c.z >= lo.Z and c.z <= hi.Z then
+                    collect(c, k, id)
                 end
             end
         end
         if #blocks == 0 then notify("No plain blocks found in that region.") return end
-        S.clip = { blocks = blocks, size = { hi.X - lo.X + 1, hi.Y - lo.Y + 1, hi.Z - lo.Z + 1 } }
+        local previewBlocks = B.selectPreviewBlocks(blocks)
+        for _, block in ipairs(previewBlocks) do
+            local sourceCell = Grid.cell(lo.X + block.dx, lo.Y + block.dy, lo.Z + block.dz)
+            local part = S.parts[Grid.key(sourceCell)]
+            block.visual = B.captureBlockVisual(part)
+            if block.visual then block.visualOffset = part.Position - Grid.cellToWorld(origin(), sourceCell) end
+        end
+        B.clearClipboard()
+        S.clip = { blocks = blocks, previewBlocks = previewBlocks, size = { hi.X - lo.X + 1, hi.Y - lo.Y + 1, hi.Z - lo.Z + 1 } }
+        B.updateSchematicControls()
         notify(("Copied %d blocks (%d machines/plants skipped)."):format(#blocks, skipped))
         refreshSoon()
     end

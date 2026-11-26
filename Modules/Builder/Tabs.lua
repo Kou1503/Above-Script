@@ -52,15 +52,16 @@ return function(State)
         Tooltip = "Uses the Y layer under your feet and the island's full X/Z bounds, ignoring the region below.",
         Callback = refreshSoon,
     })
+    B.effectiveRegionLabel = gMode:AddLabel("Set a region to see its dimensions.", true)
     gMode:AddDivider()
-    gMode:AddButton({ Text = "Pos 1 = block under crosshair", Func = function()
+    gMode:AddButton({ Text = "Pos 1 = block under player", Func = function()
         local c = pickCell() if c then setRegion(c, S.pos2 or c) end
     end })
-    gMode:AddButton({ Text = "Pos 2 = block under crosshair", Func = function()
+    gMode:AddButton({ Text = "Pos 2 = block under player", Func = function()
         local c = pickCell() if c then setRegion(S.pos1 or c, c) end
     end })
     gMode:AddButton({ Text = "Clear region", Func = function() setRegion(nil, nil) end })
-    gMode:AddLabel("Hotkeys while pointing at a block:", true)
+    gMode:AddLabel("Stand on each corner, then press its key.", true)
     gMode:AddLabel("Pos 1 key"):AddKeyPicker("KeyPos1", { Default = "Z", Mode = "Press", Text = "Pos 1 key", NoUI = false,
         Callback = function() local c = pickCell() if c then setRegion(c, S.pos2 or c) end end })
     gMode:AddLabel("Pos 2 key"):AddKeyPicker("KeyPos2", { Default = "X", Mode = "Press", Text = "Pos 2 key", NoUI = false,
@@ -111,7 +112,22 @@ return function(State)
     gFill:AddLabel("Fill: empty cells, chunk by chunk, each next to an existing block. Break: top layer first with your pickaxe; plain blocks only, never machines.", true)
 
     -- Planter tab ----------------------------------------------------------------------------
-    local gPlant = Tabs.Plant:AddLeftGroupbox("Checkerboard", "flower-2")
+    local gPlant = Tabs.Plant:AddLeftGroupbox("Planting layout", "flower-2")
+    local gStrips = Tabs.Plant:AddLeftGroupbox("Strip flowers", "columns-3")
+    local gSplit = Tabs.Plant:AddRightGroupbox("Two zones", "split")
+    local function showLayout(layout)
+        Options.FlowerA:SetVisible(layout ~= STRIP_MODE)
+        Options.FlowerB:SetVisible(layout == "Two zones")
+        gSplit:SetVisible(layout == "Two zones")
+        gStrips:SetVisible(layout == STRIP_MODE)
+    end
+    gPlant:AddDropdown("PlantLayout", {
+        Text = "Layout", Values = { "One flower", "Two zones", STRIP_MODE }, Default = 2,
+        Callback = function(value)
+            if Options.FlowerB then showLayout(value) end
+            refreshSoon()
+        end,
+    })
     gPlant:AddDropdown("FlowerA", { Text = "Flower A (zone 1)", Values = flowerIds, Default = 1, Searchable = true, Callback = refreshSoon })
     gPlant:AddDropdown("FlowerB", { Text = "Flower B (zone 2)", Values = flowerIds, Default = 1, Searchable = true, Callback = refreshSoon })
     gPlant:AddDropdown("Parity", { Text = "Parity", Values = { "Even", "Odd" }, Default = 1, Callback = refreshSoon, Tooltip = "Even = (gx + gz) % 2 == 0" })
@@ -123,30 +139,180 @@ return function(State)
 
     local stripFlowerValues = { STRIP_SKIP }
     for _, id in ipairs(flowerIds) do stripFlowerValues[#stripFlowerValues + 1] = id end
-    local gStrips = Tabs.Plant:AddLeftGroupbox("4-Strip Mode", "columns-3")
-    gStrips:AddDropdown("PlantLayout", { Text = "Layout", Values = { "Single / 2-Zone Split", STRIP_MODE }, Default = 1, Callback = refreshSoon,
-        Tooltip = "4-Strip Mode plants one flower per strip between the 3 stone dividers built by the 4-Strip Farm Preset. Uses the same strip maths and the Parity above." })
     for i = 1, 4 do
         gStrips:AddDropdown("Strip" .. i, { Text = "Strip " .. i .. " Flower", Values = stripFlowerValues, Default = 1,
             Searchable = true, Callback = refreshSoon })
     end
-    gStrips:AddButton({ Text = "Use 4-Strip Mode", Func = function() Options.PlantLayout:SetValue(STRIP_MODE) end })
 
-    local gSplit = Tabs.Plant:AddRightGroupbox("Two-Sided Layout", "split")
-    gSplit:AddDropdown("SplitAxis", { Text = "Run along", Values = { "A only", "Row (Z)", "Column (X)" }, Default = 2, Callback = refreshSoon,
-        Tooltip = "Row (Z) / Column (X): Flower A starts at one end, Flower B at the opposite end, both working toward the middle. 'A only' ignores Flower B completely." })
+    gSplit:AddDropdown("SplitAxis", { Text = "Run along", Values = { "Row (Z)", "Column (X)" }, Default = 1, Callback = refreshSoon,
+        Tooltip = "Row (Z) / Column (X): Flower A starts at one end, Flower B at the opposite end, both working toward the middle." })
     gSplit:AddSlider("GapWidth", { Text = "Minimum empty middle (cells)", Default = 2, Min = 0, Max = 60, Rounding = 0, Callback = refreshSoon,
         Tooltip = "A and B never get closer than this. If your stock runs out earlier the open area in the middle is bigger." })
     gSplit:AddToggle("FlipZones", { Text = "Swap ends (A starts at the high end)", Default = false, Callback = refreshSoon })
     gSplit:AddLabel("A plants from its end toward the centre and B does the same from the opposite end, so they never mix.", true)
 
+    showLayout(Options.PlantLayout.Value)
+
     -- Schematic tab --------------------------------------------------------------------------
     local gSch = Tabs.Schem:AddLeftGroupbox("Copy & Paste", "clipboard")
     gSch:AddButton({ Text = "Copy region", Func = copyRegion })
-    gSch:AddButton({ Text = "Clear clipboard", Func = function() S.clip = nil refreshSoon() end })
+    gSch:AddButton({ Text = "Clear clipboard", Func = function() B.clearClipboard() B.updateSchematicControls() refreshSoon() end })
     gSch:AddDropdown("PasteRot", { Text = "Y rotation", Values = { "0", "90", "180", "270" }, Default = 1, Callback = refreshSoon })
-    gSch:AddToggle("SnapPasteY", { Text = "Snap paste Y to layer under me (+1)", Default = true, Callback = refreshSoon })
-    gSch:AddLabel("Pastes with its min corner at your grid-snapped X/Z. Plain blocks only.", true)
+    gSch:AddDropdown("PasteMirror", {
+        Text = "Mirror", Values = { "None", "Mirror X", "Mirror Z" }, Default = 1, Callback = refreshSoon,
+    })
+    gSch:AddDropdown("PasteAnchor", {
+        Text = "Anchor", Values = { "Copied corner", "Center", "High X corner", "High Z corner", "High X and Z corner" },
+        Default = 1, Callback = refreshSoon,
+    })
+    gSch:AddToggle("SnapPasteY", {
+        Text = "Snap paste Y to layer under me (+1)", Default = true, Callback = refreshSoon,
+        Tooltip = "Used when following the player or setting the destination to your position.",
+    })
+    gSch:AddLabel("Rotation turns the schematic around the selected anchor. Plain blocks only.", true)
+
+    gSch:AddToggle("ShowPastePreview", { Text = "Show paste preview", Default = true })
+    local singleLayer = gSch:AddToggle("PreviewSingleLayer", { Text = "Show one layer", Default = false })
+    local layerControls = gSch:AddDependencyBox()
+    local layerSlider = layerControls:AddSlider("PreviewLayer", {
+        Text = "Layer from bottom", Default = 1, Min = 1, Max = 2, Rounding = 0, AllowRightClickInput = true,
+    })
+    layerControls:SetupDependencies({ { singleLayer, true } })
+    B.pastePreviewLabel = gSch:AddLabel("Copy a region to preview it here.", true)
+
+    B.schematicChecklistLabel = gSch:AddLabel("Copy a region first.", true)
+    gSch:AddButton({ Text = "Paste here", Func = function() startBuild("schematic") end })
+    gSch:AddButton({ Text = "Stop", Func = function() S.cancel = true end })
+    B.schematicProgressLabel = gSch:AddLabel("Done 0 / 0", true)
+
+    local gPasteRegion = Tabs.Schem:AddRightGroupbox("Placement editor", "move-3d")
+    gPasteRegion:AddDropdown("PastePosition", {
+        Text = "Destination", Values = { "Follow player", "Fixed coordinates" }, Default = 1,
+        Callback = refreshSoon,
+    })
+    local pasteCoordinates = gPasteRegion:AddDependencyBox()
+    local pasteBounds = B.islandBounds()
+    pasteCoordinates:AddSlider("PasteX", {
+        Text = "Paste X", Default = 0, Min = -pasteBounds.horizontal, Max = pasteBounds.horizontal,
+        Rounding = 0, AllowRightClickInput = true, Callback = refreshSoon,
+    })
+    pasteCoordinates:AddSlider("PasteY", {
+        Text = "Paste Y (layer)", Default = 0, Min = -pasteBounds.below, Max = pasteBounds.above,
+        Rounding = 0, AllowRightClickInput = true, Callback = refreshSoon,
+    })
+    pasteCoordinates:AddSlider("PasteZ", {
+        Text = "Paste Z", Default = 0, Min = -pasteBounds.horizontal, Max = pasteBounds.horizontal,
+        Rounding = 0, AllowRightClickInput = true, Callback = refreshSoon,
+    })
+    pasteCoordinates:SetupDependencies({ { Options.PastePosition, "Fixed coordinates" } })
+    gPasteRegion:AddButton({ Text = "Set destination to my position", Func = function()
+        local cell, err = B.playerPasteBase()
+        if not cell then notify(err) return end
+        local destination, clipped = B.clampCell(cell)
+        Options.PasteX:SetValue(destination.x)
+        Options.PasteY:SetValue(destination.y)
+        Options.PasteZ:SetValue(destination.z)
+        Options.PastePosition:SetValue("Fixed coordinates")
+        if clipped then notify("Destination trimmed to the world limit.") end
+    end })
+    gPasteRegion:AddLabel("Coordinates place the anchor on the island grid. Right-click a slider to type an exact value.", true)
+
+    local swap = Tabs.Schem:AddRightGroupbox("Material swap", "layers")
+    local materials = {}
+    for _, id in ipairs(blockIds) do
+        if not (Config.Build.Footprints and Config.Build.Footprints[id]) then table.insert(materials, id) end
+    end
+    local swapFrom = swap:AddDropdown("SwapMaterialFrom", {
+        Text = "Replace", Values = {}, AllowNull = true, Searchable = true, Callback = refreshSoon,
+    })
+    local swapTo = swap:AddDropdown("SwapMaterialTo", {
+        Text = "With", Values = materials, AllowNull = true, Searchable = true, Callback = refreshSoon,
+    })
+    local function clearSwap()
+        swapFrom:SetValue(nil)
+        swapTo:SetValue(nil)
+    end
+    swap:AddButton({ Text = "Clear swap", Func = clearSwap })
+    function B.updateSchematicControls()
+        local used, available = {}, {}
+        if S.clip then
+            for _, block in ipairs(S.clip.blocks) do used[block.id] = true end
+            for _, id in ipairs(materials) do
+                if used[id] then table.insert(available, id) end
+            end
+        end
+        clearSwap()
+        swapFrom:SetValues(available)
+        layerSlider:SetMax(math.max(2, S.clip and S.clip.size[2] or 1))
+        layerSlider:SetValue(1)
+    end
+    for _, id in ipairs({ "SwapMaterialFrom", "SwapMaterialTo", "PreviewLayer", "PreviewSingleLayer" }) do
+        table.insert(UI.IgnoreIndexes, id)
+    end
+
+    B.addSchematicLibrary(Tabs.Schem:AddRightGroupbox("Schematic library", "folder"))
+    local map = Tabs.Plant:AddRightGroupbox("Planting preview", "grid")
+    local mapLabel = map:AddLabel("Select a region to preview planting.", true)
+    local pageX, pageZ = 0, 0
+    local cachedMap
+    local function drawMap()
+        if not cachedMap then mapLabel:SetText("Choose a region and flowers to preview planting.") return end
+        local m = cachedMap
+        local span = 12
+        pageX = math.clamp(pageX, 0, math.floor((m.x1-m.x0)/span))
+        pageZ = math.clamp(pageZ, 0, math.floor((m.z1-m.z0)/span))
+        local x0, z0 = m.x0+pageX*span, m.z0+pageZ*span
+        local x1, z1 = math.min(x0+span-1,m.x1), math.min(z0+span-1,m.z1)
+        local lines = {("X %d to %d →   Z %d to %d ↓"):format(x0,x1,z0,z1)}
+        for z = z0,z1 do
+            local row = {}
+            for x = x0,x1 do
+                local divider = m.dividers[m.splitX and x or z]
+                table.insert(row, divider and "|" or (m.cells[x] and m.cells[x][z]) or "·")
+            end
+            table.insert(lines, '<font face="Code">' .. table.concat(row," ") .. "</font>")
+        end
+        table.insert(lines, m.legend)
+        mapLabel:SetText(table.concat(lines,"\n"))
+    end
+    function B.updatePlantMap(plan)
+        cachedMap = nil
+        if plan then
+            local m = {cells={},dividers={}}
+            if Options.PlantLayout.Value == STRIP_MODE then
+                local g = B.stripGeometry()
+                if g then
+                    m.x0,m.x1,m.z0,m.z1,m.splitX = g.x0,g.x1,g.z0,g.z1,g.splitX
+                    for _,d in ipairs(g.dividers) do m.dividers[d]=true end
+                    m.legend = "1–4: flower strip   | divider   · no placement"
+                end
+            else
+                local lo,hi = B.region(true)
+                if lo then
+                    m.x0,m.x1,m.z0,m.z1 = lo.X,hi.X,lo.Z,hi.Z
+                    m.legend = "A/B: flower zone   · no placement"
+                end
+            end
+            if m.x0 then
+                for _,e in ipairs(plan) do
+                    local x,z = e.cell.x,e.cell.z
+                    m.cells[x] = m.cells[x] or {}
+                    m.cells[x][z] = e.zone
+                end
+                cachedMap = m
+            end
+        end
+        drawMap()
+    end
+    for _,button in ipairs({{"← X",-1,0},{"X →",1,0},{"↑ Z",0,-1},{"Z ↓",0,1}}) do
+        map:AddButton({Text=button[1],Func=function()
+            pageX += button[2]
+            pageZ += button[3]
+            drawMap()
+        end})
+    end
+
+    B.addPlanterPresets(Tabs.Plant:AddLeftGroupbox("Planter presets", "folder"))
 
     -- Planter run (on the Planter tab) ---------------------------------------------------------
     local gPlantRun = Tabs.Plant:AddRightGroupbox("Planter Run", "play")
